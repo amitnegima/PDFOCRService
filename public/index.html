@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Reader OCR</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e1e4ea; --text:#1d2330; --muted:#6b7385; --accent:#2a5bd7; --ok:#1c8a4a; --warn:#b26a00; --err:#c0392b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:1200px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .drop { display:block; background:var(--card); border:2px dashed var(--line); border-radius:12px; padding:34px 20px; text-align:center; cursor:pointer; transition:.15s; }
+  .drop.over, .drop:hover { border-color:var(--accent); background:#f1f5ff; }
+  .drop strong { color:var(--accent); }
+  .files { list-style:none; padding:0; margin:10px 0 0; display:grid; gap:6px; max-height:220px; overflow:auto; }
+  .files li { display:flex; align-items:center; gap:10px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }
+  .files .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .status { font-size:12px; color:var(--muted); }
+  .status.error { color:var(--err); }
+  .settings { margin-top:12px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px 14px; }
+  .settings summary { cursor:pointer; font-weight:600; }
+  .settings .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; padding:12px 0 6px; }
+  .settings label { display:flex; flex-direction:column; gap:4px; font-size:13px; }
+  .settings input { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; width:110px; }
+  .progress { margin-top:14px; display:none; }
+  .progress.on { display:block; }
+  .track { height:8px; background:var(--line); border-radius:99px; overflow:hidden; }
+  .fill { height:100%; width:0; background:var(--accent); transition:width .2s; }
+  .progress .line { display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:13px; }
+  .notice { margin-top:10px; font-size:13px; color:var(--warn); }
+  .bar { display:flex; align-items:center; justify-content:space-between; margin:26px 0 8px; }
+  .bar h2 { font-size:16px; margin:0; }
+  .actions { display:flex; gap:8px; }
+  button { font:inherit; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  .tablewrap { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:auto; max-height:70vh; }
+  table { border-collapse:collapse; width:100%; min-width:1100px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#fafbfc; font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); position:sticky; top:0; }
+  tr:last-child td { border-bottom:0; }
+  td[contenteditable]:focus { outline:2px solid var(--accent); outline-offset:-2px; background:#f8faff; }
+  td.mono { font-family:ui-monospace,Consolas,monospace; white-space:nowrap; }
+  td.empty { background:#fff6f5; }
+  .meta { font-size:12px; color:var(--muted); }
+  .badge { display:inline-block; font-size:11px; color:var(--warn); background:#fff4e0; border-radius:4px; padding:1px 6px; margin:2px 4px 0 0; }
+  .none { padding:28px; text-align:center; color:var(--muted); }
+  .hint { font-size:12px; color:var(--muted); margin-top:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>PDF Reader OCR</h1>
+  <p class="sub">Upload scanned LR / Proof of Delivery PDFs, or a ZIP of them. LR, Delivery No, Location, Vehicle no and Date are read out of the page images.</p>
+
+  <label class="drop" id="drop">
+    <input id="picker" type="file" accept="application/pdf,.pdf,application/zip,.zip" multiple hidden>
+    <div><strong>Choose PDF or ZIP files</strong> or drag them here</div>
+    <div class="meta">A ZIP can hold many PDFs; it is unzipped in your browser and sent to the server in small batches.</div>
+  </label>
+
+  <details class="settings">
+    <summary>Settings</summary>
+    <div class="grid">
+      <label>Max PDFs per upload
+        <input id="maxPdfs" type="number" min="1" max="5000">
+        <span class="meta">Anything beyond this is skipped. Raise it for larger ZIPs.</span>
+      </label>
+      <label>PDFs per API request
+        <input id="batchSize" type="number" min="1">
+        <span class="meta" id="batchHint"></span>
+      </label>
+      <label>Parallel requests
+        <input id="parallel" type="number" min="1" max="6">
+        <span class="meta">Batches sent at the same time. Higher is faster but uses more server memory.</span>
+      </label>
+    </div>
+  </details>
+
+  <div class="progress" id="progress">
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <div class="line"><span id="progressText"></span><button id="stop">Stop</button></div>
+  </div>
+  <div class="notice" id="notice"></div>
+  <ul class="files" id="failed"></ul>
+
+  <div class="bar">
+    <h2>Extracted data</h2>
+    <div class="actions">
+      <button id="copy" disabled>Copy</button>
+      <button id="xlsx" disabled>Download Excel</button>
+      <button id="clear" disabled>Clear</button>
+    </div>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Lrno</th><th>DELIVERYNO</th><th>TotalQty</th><th>LOCATION</th><th>Vehicle no</th><th>Invoicedate</th><th>Address (verification only)</th><th>Source</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="hint">OCR can misread characters. LOCATION is the last word of the address (the town). The full address is shown for verification only and is not in the Excel file. Cells with a red tint are empty; click any cell to correct it before copying or exporting.</div>
+</main>
+
+<script src="/vendor/jszip.min.js"></script>
+<script>
+const FIELDS = ["lr", "deliveryNo", "totalQty", "location", "vehicle", "date", "address"];
+const HEADERS = ["Lrno", "DELIVERYNO", "TotalQty", "LOCATION", "Vehicle no", "Invoicedate", "Address"];
+const MONO = new Set(["lr", "deliveryNo", "totalQty", "location", "vehicle", "date"]);
+const EXPORT_FIELDS = ["lr", "deliveryNo", "totalQty", "location", "vehicle", "date"]; // address is on screen only
+const RETRIES = 2;
+// The OCR API lives on the Node server; use it directly if this page was opened from somewhere else.
+const API = location.port === "3000" ? "" : "http://localhost:3000";
+
+const $ = (id) => document.getElementById(id);
+const data = [];
+let running = false, stopped = false, serverMaxBatch = 20, nextOrder = 0;
+let stats = { total: 0, done: 0, failed: 0 };
+
+// ---------- settings (kept in this browser)
+const DEFAULTS = { maxPdfs: 100, batchSize: 5, parallel: 2 };
+const settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem("ocrSettings") || "{}") };
+$("maxPdfs").value = settings.maxPdfs;
+$("batchSize").value = settings.batchSize;
+$("parallel").value = settings.parallel;
+const clamp = (v, lo, hi, d) => (Number.isFinite(+v) && v !== "" ? Math.min(hi, Math.max(lo, Math.round(+v))) : d);
+
+function applySettings() {
+  settings.maxPdfs = clamp($("maxPdfs").value, 1, 5000, DEFAULTS.maxPdfs);
+  settings.batchSize = clamp($("batchSize").value, 1, serverMaxBatch, DEFAULTS.batchSize);
+  settings.parallel = clamp($("parallel").value, 1, 6, DEFAULTS.parallel);
+  $("maxPdfs").value = settings.maxPdfs;
+  $("batchSize").value = settings.batchSize;
+  $("parallel").value = settings.parallel;
+  localStorage.setItem("ocrSettings", JSON.stringify(settings));
+}
+["maxPdfs", "batchSize", "parallel"].forEach((id) => $(id).addEventListener("change", applySettings));
+
+fetch(API + "/api/config").then((r) => r.json()).then((c) => {
+  serverMaxBatch = c.maxFilesPerRequest;
+  $("batchSize").max = serverMaxBatch;
+  $("batchHint").textContent = `Server accepts up to ${c.maxFilesPerRequest} per request (${c.maxFileMb} MB per PDF).`;
+  applySettings();
+}).catch(() => { $("batchHint").textContent = "Could not reach the server."; });
+
+// ---------- input: PDFs and ZIPs become a flat list of lazily-loaded PDFs
+const picker = $("picker"), drop = $("drop");
+picker.addEventListener("change", () => { handle([...picker.files]); picker.value = ""; });
+["dragover", "dragenter"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (ev) => handle([...ev.dataTransfer.files]));
+
+const baseName = (p) => p.split("/").pop();
+async function expand(files) {
+  const items = [];
+  for (const f of files) {
+    if (/\.zip$/i.test(f.name) || f.type.includes("zip")) {
+      const zip = await JSZip.loadAsync(f);
+      Object.values(zip.files)
+        .filter((e) => !e.dir && /\.pdf$/i.test(e.name) && !/(^|\/)(__MACOSX\/|\.)/.test(e.name))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+        // Each PDF is only decompressed when its batch is about to be sent, which keeps browser memory low.
+        .forEach((e) => items.push({ name: baseName(e.name), load: async () => new File([await e.async("blob")], baseName(e.name), { type: "application/pdf" }) }));
+    } else if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") {
+      items.push({ name: f.name, load: async () => f });
+    }
+  }
+  return items;
+}
+
+// ---------- processing
+function setProgress() {
+  const finished = stats.done + stats.failed;
+  $("fill").style.width = (stats.total ? (100 * finished) / stats.total : 0) + "%";
+  const state = running ? "Reading" : stopped ? "Stopped" : "Finished";
+  $("progressText").textContent = `${state}: ${finished} of ${stats.total} PDFs${stats.failed ? " · " + stats.failed + " failed" : ""} · ${data.length} rows`;
+}
+function addFailure(name, reason) {
+  stats.failed++;
+  const li = document.createElement("li");
+  li.innerHTML = '<span class="name"></span><span class="status error"></span>';
+  li.querySelector(".name").textContent = name;
+  li.querySelector(".status").textContent = reason;
+  $("failed").appendChild(li);
+}
+
+async function sendBatch(batch) {
+  const body = new FormData();
+  for (const item of batch) body.append("pdfs", await item.load());
+  let lastError;
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    try {
+      const res = await fetch(API + "/api/extract", { method: "POST", body });
+      const json = await res.json();
+      if (res.ok) return json.results;
+      // 4xx means the request itself is wrong (too many files, too large): retrying cannot help.
+      const err = new Error(json.error || res.statusText);
+      err.fatal = res.status < 500;
+      throw err;
+    } catch (err) {
+      lastError = err;
+      if (err.fatal) break;
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+async function handle(files) {
+  if (running) { $("notice").textContent = "An upload is still being read. Wait for it to finish or press Stop."; return; }
+  $("notice").textContent = "";
+  applySettings();
+
+  let items;
+  try { items = await expand(files); } catch (err) { $("notice").textContent = "Could not open the ZIP: " + err.message; return; }
+  if (!items.length) { $("notice").textContent = "No PDF files found in what you selected."; return; }
+  if (items.length > settings.maxPdfs) {
+    $("notice").textContent = `${items.length} PDFs found; only the first ${settings.maxPdfs} will be read. Raise "Max PDFs per upload" in Settings to read more.`;
+    items = items.slice(0, settings.maxPdfs);
+  }
+
+  running = true; stopped = false;
+  stats = { total: items.length, done: 0, failed: 0 };
+  $("failed").innerHTML = "";
+  $("progress").classList.add("on");
+  items.forEach((it) => (it.order = nextOrder++));
+  updateButtons(); setProgress();
+
+  const batches = [];
+  for (let i = 0; i < items.length; i += settings.batchSize) batches.push(items.slice(i, i + settings.batchSize));
+
+  let next = 0;
+  const lane = async () => {
+    while (!stopped && next < batches.length) {
+      const batch = batches[next++];
+      try {
+        const results = await sendBatch(batch);
+        results.forEach((r) => {
+          if (r.error) return addFailure(r.file, r.error);
+          stats.done++;
+          const order = batch.find((b) => b.name === r.file)?.order ?? 0;
+          data.push(...r.rows.map((row) => ({ ...row, totalQty: "0", _order: order })));
+        });
+      } catch (err) {
+        batch.forEach((b) => addFailure(b.name, err.message));
+      }
+      scheduleRender(); setProgress();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(settings.parallel, batches.length) }, lane));
+
+  const skipped = stats.total - stats.done - stats.failed;
+  if (stopped && skipped) $("notice").textContent = `Stopped. ${skipped} PDF(s) were not read.`;
+  running = false;
+  render(); setProgress();
+}
+$("stop").onclick = () => { stopped = true; };
+
+// ---------- table
+function updateButtons() {
+  $("copy").disabled = !data.length;
+  $("clear").disabled = running || !data.length;
+  $("xlsx").disabled = !data.length || running; // Excel only once every PDF has finished
+  $("stop").style.display = running ? "" : "none";
+}
+
+let renderQueued = false;
+function scheduleRender() { if (!renderQueued) { renderQueued = true; setTimeout(() => { renderQueued = false; render(); }, 300); } }
+
+function render() {
+  data.sort((a, b) => a._order - b._order); // keeps the order PDFs were listed in, whichever batch finished first
+  const body = $("rows");
+  body.innerHTML = "";
+  data.forEach((row, i) => {
+    const tr = document.createElement("tr");
+    FIELDS.forEach((f) => {
+      const td = document.createElement("td");
+      td.contentEditable = "plaintext-only";
+      td.textContent = row[f];
+      if (MONO.has(f)) td.className = "mono";
+      if (!row[f]) td.classList.add("empty");
+      td.addEventListener("input", () => { data[i][f] = td.textContent.trim(); td.classList.toggle("empty", !td.textContent.trim()); });
+      td.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); td.blur(); } });
+      tr.appendChild(td);
+    });
+    const src = document.createElement("td");
+    src.innerHTML = '<div class="meta"></div>';
+    src.firstChild.textContent = `${row.file}${row.pages.length ? " · p" + row.pages.join(",") : ""}`;
+    row.warnings.forEach((w) => { const b = document.createElement("span"); b.className = "badge"; b.textContent = w; src.appendChild(b); });
+    tr.appendChild(src);
+    body.appendChild(tr);
+  });
+  if (!data.length) body.innerHTML = '<tr><td colspan="8" class="none">No data yet. Upload PDFs or a ZIP to begin.</td></tr>';
+  updateButtons();
+}
+
+const tsv = () => [HEADERS, ...data.map((r) => FIELDS.map((f) => String(r[f] ?? "").replace(/[\t\r\n]+/g, " ")))].map((r) => r.join("\t")).join("\n");
+$("copy").onclick = async () => {
+  await navigator.clipboard.writeText(tsv());
+  $("copy").textContent = "Copied ✓";
+  setTimeout(() => ($("copy").textContent = "Copy"), 1500);
+};
+$("xlsx").onclick = async () => {
+  const rows = data.map((r) => Object.fromEntries(EXPORT_FIELDS.map((f) => [f, r[f]])));
+  const res = await fetch(API + "/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rows }) });
+  if (!res.ok) return alert("Could not build the Excel file");
+  const url = URL.createObjectURL(await res.blob());
+  Object.assign(document.createElement("a"), { href: url, download: "pdf-extract.xlsx" }).click();
+  URL.revokeObjectURL(url);
+};
+$("clear").onclick = () => {
+  data.length = 0; $("failed").innerHTML = ""; $("notice").textContent = "";
+  $("progress").classList.remove("on"); stats = { total: 0, done: 0, failed: 0 };
+  render();
+};
+render();
+</script>
+</body>
+</html>

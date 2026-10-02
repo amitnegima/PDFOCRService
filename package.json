@@ -1,0 +1,21 @@
+{
+  "name": "pdf-reader-ocr",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "mupdf": "^1.28.1",
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0"
+  }
+}

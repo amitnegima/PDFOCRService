@@ -1,0 +1,5 @@
+node_modules/
+.vs/
+Sample Files/
+*.tmp
+*.tmp.*
